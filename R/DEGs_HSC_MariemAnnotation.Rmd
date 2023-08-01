@@ -1,0 +1,645 @@
+---
+title: "MiloR for HSC population"
+output: html_notebook
+---
+
+```{r}
+knitr::opts_chunk$set(comment = '', fig.width = 6, 
+                      fig.height = 6, echo = FALSE, 
+                      warning = FALSE)
+```
+
+
+```{r, message = FALSE}
+library(miloR)
+library(SingleCellExperiment)
+library(scater)
+library(dplyr)
+library(patchwork)
+library(here)
+library(scales)
+library(scran)
+library(tidyverse)
+library(ggrepel)
+library(rcartocolor)
+library(circlize)
+library(Seurat)
+
+outdir = here("output")
+
+source(here("scripts/functions.R"))
+```
+
+```{r, message = FALSE}
+# Use devtools to install hdf5r and loomR from GitHub
+# devtools::install_github(repo = "hhoeflin/hdf5r")
+# devtools::install_github(repo = "mojaveazure/loomR", ref = "develop")
+library(loomR)
+```
+
+```{r}
+l1_file = here("notebooks/hvg_subset_HSC_MA_annotations.loom")
+lfile <- connect(filename = l1_file, mode = "r+", skip.validate = TRUE)
+```
+
+
+<!-- ```{r} -->
+<!-- cattrnames = names(lfile$col.attrs) -->
+
+<!-- dd = data.frame(mHSC_annotation = lfile$col.attrs$HSC_annotation[]) -->
+<!-- for(attname in cattrnames) { -->
+<!--     dd[[attname]] = lfile$col.attrs[[attname]][] -->
+<!-- } -->
+
+<!-- dd$cond = gsub( "[1234]$", "", gsub("HTO-", "", dd$HTO_maxID)) -->
+<!-- dd$HTO_maxID = factor(dd$HTO_maxID)  -->
+
+<!-- hvg.subset.HSC = SingleCellExperiment(list(logcounts=t(lfile[["matrix"]][,])), -->
+<!--     colData=dd, -->
+<!--     rowData=DataFrame(gene_names=lfile$row.attrs$var_names[])) -->
+
+<!-- # hvg.subset.HSC = hvg.subset.HSC[, colSums(hvg.subset.HSC@assays@data$logcounts) > 50] -->
+<!-- # hvg.subset.HSC = hvg.subset.HSC[rowSums(hvg.subset.HSC@assays@data$logcounts) > 50,] -->
+
+<!-- hvg.subset.HSC@assays@data$counts = exp(hvg.subset.HSC@assays@data$logcounts) - 1 -->
+
+<!-- rownames(hvg.subset.HSC) = rowData(hvg.subset.HSC)$gene_names -->
+<!-- colnames(hvg.subset.HSC) = hvg.subset.HSC$obs_names -->
+
+<!-- ### Reverse Neutrophil3 and Eosinophil -->
+
+<!-- milo.meta = dd -->
+
+<!-- gene.names = rowData(hvg.subset.HSC)$gene_names -->
+<!-- ``` -->
+
+
+
+<!-- ```{r} -->
+<!-- l1_file = here("notebooks/hvg_subset_HSC_MA_annotations_redone.loom") -->
+<!-- lfile <- connect(filename = l1_file, mode = "r+", skip.validate = TRUE) -->
+<!-- ``` -->
+
+
+```{r}
+cattrnames = names(lfile$col.attrs)
+
+dd = data.frame(mHSC_annotation = lfile$col.attrs$HSC_annotation[])
+for(attname in cattrnames) {
+    dd[[attname]] = lfile$col.attrs[[attname]][]
+}
+
+dd$cond = gsub( "[1234]$", "", gsub("HTO-", "", dd$HTO_maxID))
+dd$HTO_maxID = factor(dd$HTO_maxID) 
+
+hvg.subset.HSC = SingleCellExperiment(list(logcounts=t(lfile[["matrix"]][,])),
+    colData=dd,
+    rowData=DataFrame(gene_names=lfile$row.attrs$var_names[]))
+
+# hvg.subset.HSC = hvg.subset.HSC[, colSums(hvg.subset.HSC@assays@data$logcounts) > 50]
+# hvg.subset.HSC = hvg.subset.HSC[rowSums(hvg.subset.HSC@assays@data$logcounts) > 50,]
+
+hvg.subset.HSC@assays@data$counts = exp(hvg.subset.HSC@assays@data$logcounts) - 1
+
+rownames(hvg.subset.HSC) = rowData(hvg.subset.HSC)$gene_names
+colnames(hvg.subset.HSC) = hvg.subset.HSC$obs_names
+
+### Reverse Neutrophil3 and Eosinophil
+
+milo.meta = dd
+
+
+# rownames(hvg.subset.HSC) = gene.names
+```
+
+
+```{r}
+bm.final = readRDS(file.path(outdir, "bm_final.rds") )
+bm.pilot = readRDS(file.path(outdir, "bm_pilot.rds") )
+
+bm.merged = merge(bm.final, bm.pilot, project = "bm.merged")
+```
+
+### Running DE for all MA annotated populations
+
+```{r}
+MA.clust.HSC.DE.list = list()
+
+for (clust.id in unique(hvg.subset.HSC$Mariem_annotation)) {
+    cat("cluster", clust.id, "\n")
+
+    cluster.subset = hvg.subset.HSC[, hvg.subset.HSC$Mariem_annotation == clust.id ]
+
+    cluster.raw.counts = bm.merged[rownames(cluster.subset), colnames(cluster.subset)]
+
+    cluster.subset@colData$condition = factor(cluster.subset@colData$condition,
+                                              levels = c("PBS", "SA"))
+    cluster.subset@colData = cluster.subset@colData[colnames(cluster.raw.counts@assays$RNA@counts), ]
+
+    if (clust.id == "Early granulocyte") {
+        cluster.subset.deseq = DESeqDataSetFromMatrix(cluster.raw.counts@assays$RNA@counts + 1,
+                                                   colData = cluster.subset@colData,
+                                                   design = ~ condition)
+        cluster.DE = pseudobulk_DEseq2(cluster.subset.deseq)
+        # rld = rlog(cluster.subset.deseq, blind = FALSE)
+
+    } else {
+        cluster.subset.deseq = DESeqDataSetFromMatrix(cluster.raw.counts@assays$RNA@counts + 1,
+                                                   colData = cluster.subset@colData,
+                                                   design = ~ condition + batch)
+        cluster.DE = pseudobulk_DEseq2(cluster.subset.deseq)
+
+        # rld = rlog(cluster.subset.deseq, blind = FALSE)
+        # assay(rld) <- limma::removeBatchEffect(assay(rld), rld$batch)
+    }
+
+    MA.clust.HSC.DE.list[[clust.id]] = cluster.DE
+    # MA.cluster.normed.data[[clust.id]] =  rld
+}
+
+
+# saveRDS(cluster.normed.data, file = file.path(outdir, "granulo.clust.rld.corrected.RDS"))
+saveRDS(MA.clust.HSC.DE.list, file = file.path(outdir, "MA.clust.HSC.DE.list.RDS"))
+
+```
+
+
+```{r}
+MA.clust.HSC.DE.list = readRDS(file = file.path(outdir, "MA.clust.HSC.DE.list.RDS"))
+
+gene.sets = list()
+
+for (gene.set.paths in list.files(here("gene_sets"), full.names = TRUE)) {
+    file.base = basename(gene.set.paths)
+    
+    gene.sets[[file.base]] = read_gene_sets(gene.set.paths)
+}
+```
+
+```{r}
+fgsea.set = list()
+
+for (celltype in names(MA.clust.HSC.DE.list)) {
+    ranks = setNames(MA.clust.HSC.DE.list[[celltype]]$log2FoldChange, MA.clust.HSC.DE.list[[celltype]]$gene)
+    names(ranks) = convert_mouse_to_human(names(ranks))
+
+    cell.type.gseas = list()
+    
+    for(gene.set in names(gene.sets)) {
+        
+        fgseaRes <- fgsea(gene.sets[[gene.set]], ranks, minSize = 20, maxSize=500)    
+        cell.type.gseas[[gene.set]] = fgseaRes    
+        
+    }
+    fgsea.set[[celltype]] = cell.type.gseas
+}
+
+```
+
+
+```{r}
+
+filtered.fgsea = list()
+for (celltype in names(MA.clust.HSC.DE.list)) {
+    
+    cell.type.gseas = list()
+    for(gene.set in names(gene.sets)) {
+        cell.type.gseas[[gene.set]] = fgsea.set[[celltype]][[gene.set]] %>% 
+            filter(pval < 0.05) %>% arrange(pval, ES)
+    }
+    filtered.fgsea[[celltype]] = cell.type.gseas
+}
+
+for (celltype in names(MA.clust.HSC.DE.list)) {
+    
+    write_excel_allsheets(filtered.fgsea[[celltype]], here(paste0("notebooks/", celltype, ".SAvsPBS.FGSEA.xlsx")))
+
+}
+
+saveRDS(filtered.fgsea, file = file.path(outdir, "MA.clust.HSC.DE.list.FGSEA.RDS"))
+```
+
+
+```{r}
+pp = filtered.fgsea$`Neutrophil progenitor`$GO_Biological_Process_2021.txt %>%
+    mutate(pathway = gsub(" \\(GO:.*\\)", "", pathway)) %>% 
+    filter(padj < 0.1) %>% 
+    ggplot(aes(y = pathway, x = 1, size = -log10(pval), color = ES)) + 
+    geom_point() + scale_color_gradient2(low = scales::muted("blue"), high = scales::muted("red")) + 
+    scale_x_continuous(expand = c(0.1, 0.1)) +
+    theme_bw() + 
+    theme(axis.title.x = element_blank(),
+           axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          panel.grid.major.x = element_blank(),
+          panel.grid.minor.x = element_blank())
+```
+
+
+### FGSEA part
+
+```{r}
+
+filtered.fgsea = list()
+for (celltype in names(MA.clust.HSC.DE.list)) {
+    
+    cell.type.gseas = list()
+    for(gene.set in names(gene.sets)) {
+        cell.type.gseas[[gene.set]] = fgsea.set[[celltype]][[gene.set]] %>% 
+            filter(pval < 0.05) %>% arrange(pval, ES)
+    }
+    filtered.fgsea[[celltype]] = cell.type.gseas
+}
+
+for (celltype in names(MA.clust.HSC.DE.list)) {
+    
+    write_excel_allsheets(filtered.fgsea[[celltype]], here(paste0("notebooks/", celltype, ".SAvsPBS.FGSEA.xlsx")))
+
+}
+```
+
+```{r}
+MA.all.DE = do.call(rbind, lapply(names(MA.clust.HSC.DE.list), function(x) {
+    dt = MA.clust.HSC.DE.list[[x]]
+    dt$celltype = x
+    return(dt) } ))
+```
+
+
+```{r}
+# celltype_mapping = setNames(c("Basophil/Mast cell",
+#                                         "Dendritic cell", 
+#                                         "Early granulocyte",
+#                                         "Eosinophil",
+#                                         "Neutrophil",
+#                                         "Monocyte",
+#                                         "Macrophage", 
+#                                         "B early cell", 
+#                                         "B mature cell", 
+#                                         "T cell",
+#                                         "ILC",
+#                                         "Erythroblast",
+#                                         "Other"
+#                                         ), 
+#                             c("Basophil/Mast",
+#                                         "Dendritic", 
+#                                         "Early granulocyte",
+#                                         "Eosinophil",
+#                                         "Neutrophil",
+#                                         "Monocyte",
+#                                         "Macrophage", 
+#                                         "B early", 
+#                                         "B mature", 
+#                                         "T",
+#                                         "ILC",
+#                                         "Erythroblast",
+#                                         "Other"
+#                                         ))
+# 
+# MA.all.DE$celltype = celltype_mapping[MA.all.DE$celltype]
+```
+
+
+```{r}
+pp = MA.all.DE %>% 
+    mutate(celltype = factor(celltype,
+                             levels = c("HSC",
+                                        "CLP",
+                                        "CMP",
+                                        "GMP",
+                                        "Neutrophil progenitor", 
+                                        "Eosinophil progenitor"
+                                        ) %>% rev() ) ) %>%
+    ggplot((aes(x = log2FoldChange, y = celltype, color = log2FoldChange, alpha = -log(padj) ) )) + 
+    geom_jitter(height = 0.1) + 
+    theme_classic() +
+    scale_color_gradient2(low = "dodgerblue4", mid = "gray80", high = "darkred", name = "log2FC") +
+    theme(
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_line(color = "gray80", linetype = 1, size = 0.3),
+        axis.title.y = element_blank()) + 
+    guides(alpha = "none")
+
+ggsave(plot = pp, filename = file.path("figures", "DEG_scatterplot_HSC_miloR_inspired.pdf"),
+       width = 4.5, height = 1.9)
+
+ggsave(plot = pp, filename = file.path("figures", "DEG_scatterplot_HSC_miloR_inspired.png"),
+       width = 4.5, height = 1.9, dpi = 600)
+```
+
+
+### Combining the two
+
+```{r}
+MA.HSC.DE.list = readRDS(file = file.path(outdir, "MA.clust.HSC.DE.list.RDS"))
+
+MA.mature.DE.list = readRDS(file = file.path(outdir, "MA.clust.DE.list.RDS"))
+
+MA.all.DE.list = c(MA.HSC.DE.list, MA.mature.DE.list)
+```
+
+```{r}
+MA.all.DE.combined = do.call(rbind, lapply(names(MA.all.DE.list), function(x) {
+    dt = MA.all.DE.list[[x]]
+    dt$celltype = x
+    return(dt) } ))
+```
+
+```{r}
+celltype_mapping = setNames(c("Basophil/Mast cell",
+                                        "Dendritic cell", 
+                                        "Early granulocyte",
+                                        "Eosinophil",
+                                        "Neutrophil",
+                                        "Monocyte",
+                                        "Macrophage", 
+                                        "B early cell", 
+                                        "B mature cell", 
+                                        "T cell",
+                                        "ILC",
+                                        "Erythroblast",
+                                        "Other",
+                                        "HSC",
+                                        "CLP",
+                                        "CMP",
+                                        "GMP",
+                                        "Neutrophil progenitor", 
+                                        "Eosinophil progenitor"
+                                        ), 
+                            c("Basophil/Mast",
+                                        "Dendritic", 
+                                        "Early granulocyte",
+                                        "Eosinophil",
+                                        "Neutrophil",
+                                        "Monocyte",
+                                        "Macrophage", 
+                                        "B early", 
+                                        "B mature", 
+                                        "T",
+                                        "ILC",
+                                        "Erythroblast",
+                                        "Other",
+                                        "HSC",
+                                        "CLP",
+                                        "CMP",
+                                        "GMP",
+                                        "Neutrophil progenitor", 
+                                        "Eosinophil progenitor"
+                                        ))
+
+MA.all.DE.combined$celltype = celltype_mapping[MA.all.DE.combined$celltype]
+```
+
+
+```{r}
+pp = MA.all.DE.combined %>% 
+    mutate(celltype = factor(celltype,
+                             levels = c("Basophil/Mast cell",
+                                        "Dendritic cell", 
+                                        "Early granulocyte",
+                                        "Eosinophil",
+                                        "Neutrophil",
+                                        "Monocyte",
+                                        "Macrophage", 
+                                        "B early cell", 
+                                        "B mature cell", 
+                                        "T cell",
+                                        "ILC",
+                                        "Erythroblast",
+                                        "Other",
+                                        "",
+                                        "HSC",
+                                        "CLP",
+                                        "CMP",
+                                        "GMP",
+                                        "Neutrophil progenitor", 
+                                        "Eosinophil progenitor"
+                                        ) %>% rev() ) ) %>%
+    ggplot((aes(x = log2FoldChange, y = celltype, color = log2FoldChange, alpha = -log(padj) ) )) + 
+    geom_jitter(height = 0.1) + 
+    theme_classic() +
+    scale_color_gradient2(low = "dodgerblue4", mid = "gray80", high = "darkred", name = "log2FC") +
+    theme(
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_line(color = "gray80", linetype = 1, linewidth = 0.3),
+        axis.title.y = element_blank()) + 
+    guides(alpha = "none") + 
+    scale_y_discrete(limits = c("Basophil/Mast cell",
+                                        "Dendritic cell", 
+                                        "Early granulocyte",
+                                        "Eosinophil",
+                                        "Neutrophil",
+                                        "Monocyte",
+                                        "Macrophage", 
+                                        "B early cell", 
+                                        "B mature cell", 
+                                        "T cell",
+                                        "ILC",
+                                        "Erythroblast",
+                                        "Other",
+                                        "",
+                                        "HSC",
+                                        "CLP",
+                                        "CMP",
+                                        "GMP",
+                                        "Neutrophil progenitor", 
+                                        "Eosinophil progenitor"
+                                        ) %>% rev() ) + 
+    geom_hline(yintercept = "", size = 3, color = "gray80")
+
+ggsave(plot = pp, filename = file.path("figures", "DEG_scatterplot_all_miloR_inspired.pdf"),
+       width = 4.5, height = 2.6)
+
+ggsave(plot = pp, filename = file.path("figures", "DEG_scatterplot_all_miloR_inspired.png"),
+       width = 4.5, height = 2.6, dpi = 600)
+```
+
+### Doing the heatmaps again
+
+```{r}
+set.seed(2144353)
+HSC.clust.normed.data = list()
+HSC.clust.DE.list = list()
+for (clust.id in c("Neutro", "EoP")) {
+
+    cat("cluster", clust.id, "\n")
+
+    cluster.subset = hvg.subset.HSC[, hvg.subset.HSC$Mariem_annotation == clust.id ]
+
+    cluster.raw.counts = bm.merged[rownames(cluster.subset), colnames(cluster.subset)]
+
+    cluster.subset@colData$condition = factor(cluster.subset@colData$condition,
+                                              levels = c("PBS", "SA"))
+    cluster.subset@colData = cluster.subset@colData[colnames(cluster.raw.counts@assays$RNA@counts), ]
+
+    if (clust.id == "2") {
+        cluster.subset.deseq = DESeqDataSetFromMatrix(cluster.raw.counts@assays$RNA@counts + 1,
+                                                   colData = cluster.subset@colData,
+                                                   design = ~ condition)
+        cluster.DE = pseudobulk_DEseq2(cluster.subset.deseq)
+        rld = rlog(cluster.subset.deseq, blind = FALSE)
+
+    } else {
+        cluster.subset.deseq = DESeqDataSetFromMatrix(cluster.raw.counts@assays$RNA@counts + 1,
+                                                   colData = cluster.subset@colData,
+                                                   design = ~ condition + batch)
+        cluster.DE = pseudobulk_DEseq2(cluster.subset.deseq)
+
+        rld = rlog(cluster.subset.deseq, blind = FALSE)
+        assay(rld) <- limma::removeBatchEffect(assay(rld), rld$batch)
+    }
+
+    HSC.clust.DE.list[[clust.id]] = cluster.DE
+    HSC.clust.normed.data[[clust.id]] =  rld
+}
+```
+
+
+```{r}
+center_apply <- function(x) {
+    out = t(apply(x, 1, function(y) y - mean(y)))
+    rownames(out) = rownames(x)
+    colnames(out) = colnames(x)
+    
+    return(out)
+}
+
+for (clust.id in c("Neutro", "EoP")) {
+    
+    cat("cluster", clust.id, "\n")
+    
+    cluster.DE = HSC.clust.DE.list[[clust.id]]
+    rld = HSC.clust.normed.data[[clust.id]]
+    
+    if (clust.id == "Neutro") {
+        lfd.limit = 0.7
+    } else {
+        lfd.limit = 0.6
+    }
+    
+    DE.genes = cluster.DE %>% filter(padj < 0.05, abs(log2FoldChange) > lfd.limit ) %>% pull(gene)
+    mat = assay(rld)[DE.genes, ]
+     
+    mat.centered = center_apply(mat)
+    
+    cluster.DE %>% rename(names = gene) %>% rownames_to_column() %>%
+        openxlsx::write.xlsx(file = here(paste0("notebooks/cluster", clust.id, ".HSC.DEG.SAvsPBS.xlsx")))
+
+    add_mouse_geneinfo(here(paste0("notebooks/cluster", clust.id, ".HSC.DEG.SAvsPBS.xlsx")))
+    
+    if (clust.id %in% c("EoP")) {
+        pwidth = 5
+        pheight = 8.3
+    } else {
+        pwidth = 4.5
+        pheight = 15
+    }
+    
+    # p_rdbu = DoHeatmap(HSC.normalized.scaled, features = genes, #assay = logcounts,
+    #           cells = Cells(subset(HSC.normalized.scaled, leiden == clust.id)), group.by = "condition") + 
+    #     scale_fill_continuous_divergingx(palette ="RdBu", mid = 0, rev = TRUE)
+    # 
+    # ggsave(filename = here(paste0("figures/cluster", clust.id, ".HSC.heatmap.RdBu.pdf")), 
+    #        plot = p_rdbu,
+    #        width = pwidth, height = pheight)
+    # 
+    # p_tealrose = DoHeatmap(HSC.normalized.scaled, features = genes, #assay = logcounts,
+    #           cells = Cells(subset(HSC.normalized.scaled, leiden == clust.id)), group.by = "condition") + 
+    #     scale_fill_continuous_divergingx(palette = "TealRose", mid = 0)
+    # 
+    # ggsave(filename = here(paste0("figures/cluster", clust.id, ".HSC.heatmap.TealRose.pdf")), 
+    #        plot = p_tealrose,
+    #        width = pwidth, height = pheight)
+    # 
+
+    
+    tr.palette = colorRamp2(c(quantile(mat.centered, 0.01), 0, quantile(mat.centered, 0.99)), 
+                carto_pal(n = 3, "TealRose"), space = "RGB")    
+
+    clust.ht.TR = Heatmap(mat.centered, name = "expression", 
+            col = tr.palette,
+            column_split = rld$cond,
+            top_annotation = HeatmapAnnotation(cluster = anno_block(
+        gp = gpar(fill = c("grey", "goldenrod1"), col = "white"), # <- here controls the filled color
+        ) ),
+            column_names_gp = gpar(fontsize = 0),  
+        cluster_column_slices = FALSE, 
+        row_dend_width = unit(0, "cm"),
+        column_dend_height = unit(0, "cm"),
+        row_dend_gp = gpar(col = "white"),
+        column_dend_gp = gpar(col = "white"))
+    
+    pdf(here(paste0("figures/cluster", clust.id, ".HSC.heatmap.TealRose.pdf")), 
+        width = pwidth, height = pheight)
+    draw(clust.ht.TR)
+    dev.off()
+    
+    rdbu.palette = colorRamp2(c(quantile(mat.centered, 0.01), 0, quantile(mat.centered, 0.99)),
+                c("dodgerblue4", "white", "darkred"), space = "RGB")
+
+    clust.ht.rdbu = Heatmap(mat.centered, name = "expression",
+            col = rdbu.palette,
+            column_split = rld$cond,
+            top_annotation = HeatmapAnnotation(cluster = anno_block(
+        gp = gpar(fill = c("grey", "goldenrod1"), col = "white"), # <- here controls the filled color
+        ) ),
+            column_names_gp = gpar(fontsize = 0),
+        cluster_column_slices = FALSE,
+        row_dend_width = unit(0, "cm"),
+        column_dend_height = unit(0, "cm"),
+        row_dend_gp = gpar(col = "white"),
+        column_dend_gp = gpar(col = "white"))
+
+    pdf(here(paste0("figures/cluster", clust.id, ".HSC.heatmap.RdBu.pdf")),
+        width = pwidth, height = pheight)
+    draw(clust.ht.rdbu)
+    dev.off()
+
+    
+    clust.ht.rdbu = Heatmap(mat.centered[sort(rownames(mat.centered)), ], name = "expression", 
+            col = rdbu.palette,
+            column_split = rld$cond,
+            top_annotation = HeatmapAnnotation(cluster = anno_block(
+        gp = gpar(fill = c("grey", "goldenrod1"), col = "white"), # <- here controls the filled color
+        ) ),
+            column_names_gp = gpar(fontsize = 0),
+        cluster_rows = FALSE,
+        cluster_column_slices = FALSE, 
+        row_dend_width = unit(0, "cm"),
+        column_dend_height = unit(0, "cm"),
+        row_dend_gp = gpar(col = "white"),
+        column_dend_gp = gpar(col = "white") )
+    
+    pdf(here(paste0("figures/cluster", clust.id, ".HSC.heatmap.RdBu_alphabetical.pdf")), 
+        width = pwidth, height = pheight)
+    draw(clust.ht.rdbu)
+    dev.off()
+    
+    # if (websiteLive) {
+    #     cluster.enriched <- enrichr(DE.genes, dbs)
+    # }
+    # 
+    # write_excel_allsheets(cluster.enriched, here(paste0("notebooks/cluster", clust.id, "HSC.SAvsPBS.Enrichment.xlsx")))
+   
+}
+```
+
+```{r}
+for (clust.id in names(MA.clust.HSC.DE.list)) {
+    cluster.DE = MA.clust.HSC.DE.list[[clust.id]]
+    
+    DE.genes = cluster.DE %>% filter(padj < 0.05, abs(log2FoldChange) > 0.6 ) %>% pull(gene)
+     
+    if(clust.id == "Basophil/Mast") {
+        clust.id = gsub("/", "_", clust.id)
+    }
+    cluster.DE %>% rename(names = gene) %>% rownames_to_column() %>%
+        openxlsx::write.xlsx(file = here(paste0("notebooks/cluster", clust.id, ".HSC.DEG.SAvsPBS.18.07.2023.xlsx")))
+
+    add_mouse_geneinfo(here(paste0("notebooks/cluster", clust.id, ".HSC.DEG.SAvsPBS.18.07.2023.xlsx")))
+}
+```
+```
+

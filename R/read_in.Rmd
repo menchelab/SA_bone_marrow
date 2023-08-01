@@ -1,0 +1,265 @@
+---
+title: "Bone-marrow scRNA-seq of SA infected mice"
+author: "Anna Hakobyan"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+
+```{r libs-load, include = FALSE}
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(here)
+library(ggpubr)
+library(kableExtra)
+library(tidyverse)
+
+outdir = here("output")
+data_dir = here("data/BSA_0571_PS_BM_b361cecc39de49a097ae369fe636db81")
+
+if (! file.exists(outdir)) {
+    dir.create(outdir)
+}
+
+# source(here("scripts", "marker_genes.R"))
+
+```
+
+
+```{r reading-in, include = FALSE}
+hto_index = read.table(file.path(data_dir, "COUNT",
+                                 "MR_30_10X_SA_PBS_BM_22112021_transcriptome", 
+                                 "HTO_demux.csv"), h = T, sep = "," )
+rownames(hto_index) = paste0(hto_index$index, "-1")
+hto_index$index = NULL
+colnames(hto_index) = "sample"
+
+bm.data = Read10X(file.path(data_dir, "COUNT",
+                              "MR_30_10X_SA_PBS_BM_22112021_transcriptome", 
+                              "filtered_feature_bc_matrix") )
+
+bm = CreateSeuratObject(counts  = bm.data$`Gene Expression`, 
+                        meta.data = hto_index,
+                        project = "BM", min.cells = 3,
+                          min.features = 200)
+
+
+bm.split = SplitObject(bm, split.by = "sample")
+```
+
+```{r, fig.width = 8}
+total_counts_scatterplot = bm@meta.data %>% 
+    arrange(nCount_RNA) %>% 
+    group_by(sample) %>% 
+    mutate(counter = row_number(sample)) %>% 
+    ggplot(aes(x = counter, y = nCount_RNA, color = sample)) + geom_point()
+
+ggsave(total_counts_scatterplot, filename = here("figures/total_nCount_RNA_scatter.png"),
+       width = 7, height = 5)
+
+violins_for_samples = bm@meta.data %>% 
+    arrange(nCount_RNA) %>% 
+    group_by(sample) %>% 
+    ggplot(aes(x = sample, y = nCount_RNA, fill = sample)) + 
+    geom_violin() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave(violins_for_samples, filename = here("figures/total_nCount_RNA_violin.png"),
+       width = 7, height = 5)
+```
+
+
+```{r mt-percent, include = FALSE}
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+for(smp in names(bm.split)) {
+    bm.split[[smp]][["percent.mt"]] = PercentageFeatureSet(bm.split[[smp]], pattern = "^mt-")}
+
+
+bm[["percent.mt"]] = PercentageFeatureSet(bm, pattern = "^mt-")
+```
+
+
+### QC and normalization
+
+The QC plots for number of features and number of counts, as well as percentage 
+of mitochondrial features.
+
+```{r qc-plots, echo = FALSE, warning = FALSE}
+bm_qc = VlnPlot(bm, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"),
+                group.by = "sample", ncol = 3, log = TRUE) 
+print(bm_qc)
+```
+```{r filt_params}
+nfeatRNA_thresh_low = 300
+nfeatRNA_thresh_up = 20000
+ncount_min = 500
+percentmt = 10
+```
+
+Filtering criteria are as follows:
++ min number of features(genes) - `r nfeatRNA_thresh_low`
++ max number of features(genes) - `r nfeatRNA_thresh_up`
++ min number of reads in a cell - `r ncount_min`
++ percent of mitochondrial genes - `r percentmt`
+
+
+```{r filtering-out, include = FALSE}
+init_bm_length = length(bm$nFeature_RNA)
+
+bm <- subset(bm, subset = nFeature_RNA > nfeatRNA_thresh_low &
+                 nFeature_RNA < nfeatRNA_thresh_up &
+                 percent.mt < percentmt &
+                 nCount_RNA > ncount_min
+                 )
+
+bm_qc = VlnPlot(bm, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"),
+                group.by = "sample", ncol = 3, log = TRUE) 
+
+print(bm_qc)
+for(smp in names(bm.split)) {
+    cat(smp)
+    bm.split[[smp]] = subset(bm.split[[smp]], 
+                 subset = nFeature_RNA > nfeatRNA_thresh_low &
+                 nFeature_RNA < nfeatRNA_thresh_up &
+                 percent.mt < percentmt &
+                 nCount_RNA > ncount_min)
+}
+
+bm = subset(bm, subset = sample %in% c("HTO-MR_30_10X_SA1_BM_22112021",
+                                                "HTO-MR_30_10X_PBS1_BM_22112021",
+                                                "HTO-MR_30_10X_PBS2_BM_22112021"))
+
+bm$sample = gsub("^HTO-MR_30_10X_(.*)_BM.*$", "\\1", bm$sample)
+```
+
+&nbsp;
+
+Next, we normalize the data. 
+
+```{r normalize-counts, include = FALSE, message=FALSE}
+bm <- NormalizeData(bm, normalization.method = "LogNormalize", scale.factor = 10000)
+# 
+# for(smp in names(bm.split)) {
+#     bm.split[[smp]] = NormalizeData(bm.split[[smp]], normalization.method = "LogNormalize", scale.factor = 10000)
+# }
+```
+
+### Identification of highly variable features
+
+```{r highly-variable-features-bm, echo = FALSE, warning=FALSE}
+bm <- FindVariableFeatures(bm, selection.method = "vst", nfeatures = 2000)
+
+# # Identify the 10 most highly variable genes
+bm_top10 <- head(VariableFeatures(bm), 10)
+bm_top30 <- head(VariableFeatures(bm), 30)  
+bm_top30 %>% enframe(name = NULL, value = "top30Genes") %>% kbl()
+
+# plot variable features with and without labels
+bm_variable_genes_plot <- VariableFeaturePlot(bm)
+bm_variable_genes_labeled <- LabelPoints(plot = bm_variable_genes_plot, 
+                                           points = bm_top30, repel = TRUE) + 
+    plot_annotation(title = "bm - highly variable genes")
+print(bm_variable_genes_labeled)
+```
+
+<!-- ```{r highly-variable-features-bm-split, echo=FALSE, warning=FALSE, results='hide', fig.keep='all} -->
+<!-- bm_variable_genes_plot.split = list() -->
+
+<!-- for(smp in names(bm.split)) { -->
+<!--     bm.split[[smp]] = FindVariableFeatures(bm.split[[smp]], selection.method = "vst",  -->
+<!--                                            nfeatures = 2000) -->
+
+<!--     vg_plot = VariableFeaturePlot(bm.split[[smp]]) -->
+<!--     bm_variable_genes_plot.split[[smp]] =  -->
+<!--         LabelPoints(plot = vg_plot, points = head(VariableFeatures(bm.split[[smp]]), 30), -->
+<!--                     repel = TRUE) + plot_annotation(title = smp ) -->
+<!-- } -->
+
+<!-- highly_variable_regions_plots = ggarrange(plotlist = bm_variable_genes_plot.split, -->
+<!--                                           nrow = 3, ncol = 2) -->
+<!-- print(highly_variable_regions_plots) -->
+<!-- ``` -->
+
+
+Next, scaling is applied, which transforms gene expression to have a mean of 
+0 and a variance of 1 across cells.
+
+```{r scaling, include = FALSE}
+bm_all_genes = rownames(bm)
+bm = ScaleData(bm, features = bm_all_genes)
+
+for(smp in names(bm.split)) {
+    bm.split[[smp]] = ScaleData(bm.split[[smp]], features = bm_all_genes)
+}
+```
+
+
+### Running linear dimensionality reduction(PCA)
+
+```{r pca, echo = FALSE, message=FALSE}
+bm <- RunPCA(bm, features = VariableFeatures(object = bm))
+
+
+for(smp in names(bm.split)) {
+    bm.split[[smp]] = RunPCA(bm.split[[smp]], 
+                             features = VariableFeatures(object = bm.split[[smp]]))
+}
+```
+
+```{r determine-dimensionality, include = FALSE}
+bm <- JackStraw(bm, num.replicate = 100, dims = 50)
+bm <- ScoreJackStraw(bm, dims = 1:50)
+
+JackStrawPlot(bm, dims = 1:50) # PC32 
+
+# bm_3classes = subset(bm, subset = sample %in% c("HTO-MR_30_10X_SA1_BM_22112021",
+#                                                 "HTO-MR_30_10X_PBS1_BM_22112021",
+#                                                 "HTO-MR_30_10X_PBS2_BM_22112021"))
+# 
+# bm_3classes <- JackStraw(bm_3classes, num.replicate = 100, dims = 50)
+# bm_3classes <- ScoreJackStraw(bm_3classes, dims = 1:40)
+# 
+# JackStrawPlot(bm_3classes, dims = 1:40)
+```
+
+
+```{r finding-clusters, include = FALSE}
+bm <- FindNeighbors(bm, dims = 1:32)
+bm <- FindClusters(bm, resolution = 0.5)
+```
+
+
+### Running non-linear dimensionality reduction with UMAP
+
+
+```{r, echo = FALSE}
+bm <- RunUMAP(bm, dims = 1:32)
+
+bm_umap = DimPlot(bm, reduction = "umap") + 
+    plot_annotation(title = "bm UMAP")
+
+print(bm_umap)
+
+# bm_3classes <- RunUMAP(bm_3classes, dims = 1:28)
+# 
+# bm_3classes_umap = DimPlot(bm_3classes, reduction = "umap") + 
+#     plot_annotation(title = "bm_3classes UMAP")
+# 
+# print(bm_3classes_umap)
+```
+
+```{r saving-data, include = FALSE}
+saveRDS(bm, file = file.path(outdir, "bm.rds") )
+
+# saveRDS(bm_3classes, file = file.path(outdir, "bm_3classes.rds") )
+
+bm.split = SplitObject(bm, split.by = "sample")
+saveRDS(bm.split, file = file.path(outdir, "bm_split.rds"))
+```
+
