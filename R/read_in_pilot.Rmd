@@ -212,63 +212,6 @@ bm$sample = gsub("^HTO-MR_30_10X_(.*)_BM.*$", "\\1", bm$sample)
 
 After filtering there are `r Cells(bm) %>% length` cells and `r nrow(bm)` genes.
 
-<!-- ```{r normalize-counts, include = FALSE, message=FALSE} -->
-<!-- bm <- NormalizeData(bm, normalization.method = "LogNormalize", scale.factor = 10000) -->
-<!-- #  -->
-<!-- # for(smp in names(bm.split)) { -->
-<!-- #     bm.split[[smp]] = NormalizeData(bm.split[[smp]], normalization.method = "LogNormalize", scale.factor = 10000) -->
-<!-- # } -->
-<!-- ``` -->
-
-<!-- ### Identification of highly variable features -->
-
-<!-- ```{r highly-variable-features-bm, echo = FALSE, warning=FALSE} -->
-<!-- bm <- FindVariableFeatures(bm, selection.method = "vst", nfeatures = 2000) -->
-
-<!-- # # Identify the 10 most highly variable genes -->
-<!-- bm_top10 <- head(VariableFeatures(bm), 10) -->
-<!-- bm_top30 <- head(VariableFeatures(bm), 30)   -->
-<!-- bm_top30 %>% enframe(name = NULL, value = "top30Genes") %>% kbl() -->
-
-<!-- # plot variable features with and without labels -->
-<!-- bm_variable_genes_plot <- VariableFeaturePlot(bm) -->
-<!-- bm_variable_genes_labeled <- LabelPoints(plot = bm_variable_genes_plot,  -->
-<!--                                            points = bm_top30, repel = TRUE) +  -->
-<!--     plot_annotation(title = "bm - highly variable genes") -->
-<!-- print(bm_variable_genes_labeled) -->
-<!-- ``` -->
-
-<!-- <!-- ```{r highly-variable-features-bm-split, echo=FALSE, warning=FALSE, results='hide', fig.keep='all} --> -->
-<!-- <!-- bm_variable_genes_plot.split = list() --> -->
-
-<!-- <!-- for(smp in names(bm.split)) { --> -->
-<!-- <!--     bm.split[[smp]] = FindVariableFeatures(bm.split[[smp]], selection.method = "vst",  --> -->
-<!-- <!--                                            nfeatures = 2000) --> -->
-
-<!-- <!--     vg_plot = VariableFeaturePlot(bm.split[[smp]]) --> -->
-<!-- <!--     bm_variable_genes_plot.split[[smp]] =  --> -->
-<!-- <!--         LabelPoints(plot = vg_plot, points = head(VariableFeatures(bm.split[[smp]]), 30), --> -->
-<!-- <!--                     repel = TRUE) + plot_annotation(title = smp ) --> -->
-<!-- <!-- } --> -->
-
-<!-- <!-- highly_variable_regions_plots = ggarrange(plotlist = bm_variable_genes_plot.split, --> -->
-<!-- <!--                                           nrow = 3, ncol = 2) --> -->
-<!-- <!-- print(highly_variable_regions_plots) --> -->
-<!-- <!-- ``` --> -->
-
-
-<!-- Next, scaling is applied, which transforms gene expression to have a mean of  -->
-<!-- 0 and a variance of 1 across cells. -->
-
-<!-- ```{r scaling, include = FALSE} -->
-<!-- bm_all_genes = rownames(bm) -->
-<!-- bm = ScaleData(bm, features = bm_all_genes) -->
-
-<!-- for(smp in names(bm.split)) { -->
-<!--     bm.split[[smp]] = ScaleData(bm.split[[smp]], features = bm_all_genes) -->
-<!-- } -->
-<!-- ``` -->
-
 ### scTransforming
 
 ```{r}
@@ -292,59 +235,6 @@ bm.split = SplitObject(bm, split.by = "sample")
 saveRDS(bm.split, file = file.path(outdir, "bm_split_pilot.rds"))
 ```
 
-
-<!-- ### Running linear dimensionality reduction(PCA) -->
-
-<!-- ```{r pca, echo = FALSE, message=FALSE} -->
-<!-- bm <- RunPCA(bm, features = VariableFeatures(object = bm)) -->
-
-<!-- # for(smp in names(bm.split)) { -->
-<!-- #     bm.split[[smp]] = RunPCA(bm.split[[smp]],  -->
-<!-- #                              features = VariableFeatures(object = bm.split[[smp]])) -->
-<!-- # } -->
-<!-- ``` -->
-
-<!-- ```{r determine-dimensionality, include = FALSE} -->
-<!-- bm <- JackStraw(bm, num.replicate = 100, dims = 50) -->
-<!-- bm <- ScoreJackStraw(bm, dims = 1:50) -->
-
-<!-- JackStrawPlot(bm, dims = 1:50) # PC32  -->
-
-<!-- # bm_3classes = subset(bm, subset = sample %in% c("HTO-MR_30_10X_SA1_BM_22112021", -->
-<!-- #                                                 "HTO-MR_30_10X_PBS1_BM_22112021", -->
-<!-- #                                                 "HTO-MR_30_10X_PBS2_BM_22112021")) -->
-<!-- #  -->
-<!-- # bm_3classes <- JackStraw(bm_3classes, num.replicate = 100, dims = 50) -->
-<!-- # bm_3classes <- ScoreJackStraw(bm_3classes, dims = 1:40) -->
-<!-- #  -->
-<!-- # JackStrawPlot(bm_3classes, dims = 1:40) -->
-<!-- ``` -->
-
-
-<!-- ```{r finding-clusters, include = FALSE} -->
-<!-- bm <- FindNeighbors(bm, dims = 1:32) -->
-<!-- bm <- FindClusters(bm, resolution = 0.5) -->
-<!-- ``` -->
-
-
-<!-- ### Running non-linear dimensionality reduction with UMAP -->
-
-
-<!-- ```{r, echo = FALSE} -->
-<!-- bm <- RunUMAP(bm, dims = 1:32) -->
-
-<!-- bm_umap = DimPlot(bm, reduction = "umap") +  -->
-<!--     plot_annotation(title = "bm UMAP") -->
-
-<!-- print(bm_umap) -->
-
-<!-- # bm_3classes <- RunUMAP(bm_3classes, dims = 1:28) -->
-<!-- #  -->
-<!-- # bm_3classes_umap = DimPlot(bm_3classes, reduction = "umap") +  -->
-<!-- #     plot_annotation(title = "bm_3classes UMAP") -->
-<!-- #  -->
-<!-- # print(bm_3classes_umap) -->
-<!-- ``` -->
 
 
 # Annotations with singleR

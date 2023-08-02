@@ -1,5 +1,5 @@
 ---
-title: "Bone-marrow Final scRNA-seq of SA infected mice"
+title: "Bone-marrow final scRNA-seq of SA infected mice"
 author: "Anna Hakobyan"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output:
@@ -56,7 +56,6 @@ bm = CreateSeuratObject(counts  = bm.data$`Gene Expression`,
                         project = "BM",
                       min.cells = 3)
 
-# bm.split = SplitObject(bm, split.by = "sample")
 ```
 
 ### HTO analysis
@@ -123,8 +122,6 @@ DimPlot(bm.singlet, group.by = "HTO_classification")
 ```{r}
 bm = bm.singlet
 ```
-
-
 
 ```{r, fig.width = 8}
 total_counts_scatterplot = bm@meta.data %>% 
