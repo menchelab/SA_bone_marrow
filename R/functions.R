@@ -86,7 +86,7 @@ read_excel_allsheets <- function(filename, tibble = FALSE) {
     x <- lapply(sheets, function(X) readxl::read_excel(filename, sheet = X))
     if(!tibble) x <- lapply(x, function(y) {
         y = as.data.frame(y)
-        y[[1]] = NULL
+        # y[[1]] = NULL
         return(y)
     })
     names(x) <- sheets
