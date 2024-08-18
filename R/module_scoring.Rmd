@@ -171,8 +171,6 @@ table5.gene.features = sapply(cell.type.genes, function(x) x$Gene)
 ```
 
 ```{r}
-# combined.scored = AddModuleScore(combined, gene.score.features,
-#                                  name = names(gene.score.features))
 hvg.subset.HSC = AddModuleScore(as.Seurat(hvg.subset.HSC), gene.score.features, 
                                 name = names(gene.score.features))
 hvg.subset.mature = AddModuleScore(as.Seurat(hvg.subset.mature), gene.score.features,
@@ -193,6 +191,52 @@ write.csv(hvg.subset.mature@meta.data[, c("Eosinophil1" ,
                                        "Granulocyte_Monocyte_progenitor5",
                                        "Common_Myeloid_progenitor6")],
           file = here("Rout/mature.modulescores.csv"))
+```
+
+
+```{r}
+# combined.scored = AddModuleScore(combined, gene.score.features,
+#                                  name = names(gene.score.features))
+hvg.subset.HSC = AddModuleScore(hvg.subset.HSC, table2.gene.features, 
+                                name = names(table2.gene.features))
+hvg.subset.mature = AddModuleScore(hvg.subset.mature, table2.gene.features,
+                                   name = names(table2.gene.features))
+
+hvg.subset.HSC = AddModuleScore(hvg.subset.HSC, table5.gene.features, 
+                                name = names(table5.gene.features))
+hvg.subset.mature = AddModuleScore(hvg.subset.mature, table5.gene.features,
+                                   name = names(table5.gene.features))
+
+write.csv(hvg.subset.HSC@meta.data[, c("basophil1",
+                                       "EBM12",  
+                                       "EBM23", 
+                                       "eosinophil4",
+                                       "monocyte5",
+                                       "multipotent_progenitor_16",
+                                       "multipotent_progenitor_27",
+                                       "neutrophil8",
+                                       "eos_stage11",
+                                       "eos_stage22", 
+                                       "eos_stage33",
+                                       "eos_stage44",
+                                       "eos_stage55")],
+          file = here("Rout/HSC.modulescores.EOSpaper.csv"))
+
+write.csv(hvg.subset.mature@meta.data[, c("basophil1",
+                                       "EBM12",  
+                                       "EBM23", 
+                                       "eosinophil4",
+                                       "monocyte5",
+                                       "multipotent_progenitor_16",
+                                       "multipotent_progenitor_27",
+                                       "neutrophil8",
+                                       "eos_stage11",
+                                       "eos_stage22", 
+                                       "eos_stage33",
+                                       "eos_stage44",
+                                       "eos_stage55")],
+          file = here("Rout/mature.modulescores.EOSpaper.csv"))
+
 ```
 
 ```{r}
