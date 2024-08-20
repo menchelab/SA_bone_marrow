@@ -106,7 +106,7 @@ add_mouse_geneinfo = function(filename, suffix = "gene_info", entrez.info.file =
     if (!exists("entrez.gene.condensed")) {
         
         if (is.null(entrez.info.file)) {
-            entrez.info.file = here("scripts/mouse.entrez.info.RDS")
+            entrez.info.file = here("data/mouse_gene_info/mouse.entrez.info.RDS")
         }
         entrez.gene.all = readRDS(entrez.info.file)
         
