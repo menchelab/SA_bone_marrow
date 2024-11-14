@@ -1,5 +1,5 @@
 ---
-title: "scNym clustering HSC DEG"
+title: "scNym clustering mature DEG"
 output: html_notebook
 ---
 
@@ -35,15 +35,44 @@ library(loomR)
 ### Getting scnym-based leiden mapping 
 
 ```{r}
-l1_file = here("scfiles/SA_HSC_v2.loom")
+l1_file = here("scfiles/SA_mature_v2.loom")
 lfile <- connect(filename = l1_file, mode = "r+", skip.validate = TRUE)
 
 cattrnames = names(lfile$col.attrs)
 
-SA.HSC.sample.annots = data.frame(leiden = lfile$col.attrs$leiden[])
+SA.mature.sample.annots = data.frame(leiden = lfile$col.attrs$leiden[])
 for(attname in cattrnames) {
-    SA.HSC.sample.annots[[attname]] = lfile$col.attrs[[attname]][]
+    SA.mature.sample.annots[[attname]] = lfile$col.attrs[[attname]][]
 }
+lfile$close_all()
+```
+### Reading the hvg data
+
+```{r}
+l1_file = here("scfiles/hvg_mature_v2_2608.loom")
+lfile <- connect(filename = l1_file, mode = "r+", skip.validate = TRUE)
+
+cattrnames = names(lfile$col.attrs)
+
+hvg.mature.sample.annots = data.frame(leiden = lfile$col.attrs[["leiden"]][])
+for(attname in cattrnames) {
+    hvg.mature.sample.annots[[attname]] = lfile$col.attrs[[attname]][]
+}
+
+hvg.mature.v2 = SingleCellExperiment(list(logcounts=t(lfile[["matrix"]][,])),
+    colData=hvg.mature.sample.annots,
+    rowData=DataFrame(gene_names=lfile$row.attrs$var_names[]))
+
+# hvg.subset.mature = hvg.subset.mature[, colSums(hvg.subset.mature@assays@data$logcounts) > 50]
+# hvg.subset.mature = hvg.subset.mature[rowSums(hvg.subset.mature@assays@data$logcounts) > 50,]
+
+hvg.mature.v2@assays@data$counts = exp(hvg.mature.v2@assays@data$logcounts) - 1
+
+rownames(hvg.mature.v2) = rowData(hvg.mature.v2)$gene_names
+colnames(hvg.mature.v2) = hvg.mature.v2$obs_names
+
+hvg.mature.v2 = as.Seurat(hvg.mature.v2)
+
 lfile$close_all()
 ```
 
@@ -58,52 +87,71 @@ bm.pilot$batch = "pilot"
 bm.merged = merge(bm.final, bm.pilot, project = "bm.merged")
 ```
 
-### Reading the hvg data
+
+### Running cluster DEGs
 
 ```{r}
-l1_file = here("scfiles/hvg_HSC_v2.loom")
-lfile <- connect(filename = l1_file, mode = "r+", skip.validate = TRUE)
+# lfc.limit = 0.5
 
-cattrnames = names(lfile$col.attrs)
+clust.mature.DE.list = list()
+hvg.mature.sample.annots$leiden = as.character(hvg.mature.sample.annots$leiden)
+for (clust.id in unique(hvg.mature.sample.annots$leiden)) {
+    try({
+        cat("cluster", clust.id, "\n")
+    
+    common.cells = intersect(rownames(bm.merged@meta.data),
+                                             hvg.mature.sample.annots$obs_names)
+    
+    cluster.raw.counts = bm.merged[rownames(bm.merged), 
+                                   common.cells]
+    
+    bm.merged.metadata = bm.merged@meta.data[common.cells, ]
+    
+    rownames(hvg.mature.sample.annots) = hvg.mature.sample.annots$obs_names
+    bm.merged.metadata$leiden = hvg.mature.sample.annots[common.cells,]$leiden
+    
+    bm.merged.metadata = bm.merged.metadata %>% 
+        mutate(cluster.condition = ifelse(leiden == clust.id, "1", "0"),
+               cluster.condition = factor(cluster.condition, levels = c("0", "1")))
+    
+    cluster.subset.deseq = DESeqDataSetFromMatrix(cluster.raw.counts@assays$RNA@counts + 1,
+                                                   colData = bm.merged.metadata,
+                                                   design = ~ cluster.condition + batch)
+    cluster.DE = pseudobulk_DEseq2(cluster.subset.deseq, contrast.in = c("cluster.condition", "1", "0"))
 
-hvg.HSC.sample.annots = data.frame(leiden = SA.HSC.sample.annots$leiden)
-for(attname in cattrnames) {
-    hvg.HSC.sample.annots[[attname]] = lfile$col.attrs[[attname]][]
+        # rld = rlog(cluster.subset.deseq, blind = FALSE)
+        # assay(rld) <- limma::removeBatchEffect(assay(rld), rld$batch)
+
+    cluster.DE = cluster.DE %>% arrange(padj, desc(log2FoldChange) )
+    clust.mature.DE.list[[clust.id]] = cluster.DE
+    
+    cluster.DE %>% rename(names = gene) %>% rownames_to_column() %>%
+        openxlsx::write.xlsx(file = here(paste0("DEG_sheets/cluster_markers/mature/cluster", clust.id, ".mature.13.09.2024.xlsx")))
+
+    add_mouse_geneinfo(here(paste0("DEG_sheets/cluster_markers/mature/cluster", clust.id,
+                                   ".mature.13.09.2024.xlsx")))
+    })
 }
-
-hvg.HSC.v2 = SingleCellExperiment(list(logcounts=t(lfile[["matrix"]][,])),
-    colData=hvg.HSC.sample.annots,
-    rowData=DataFrame(gene_names=lfile$row.attrs$var_names[]))
-
-# hvg.subset.HSC = hvg.subset.HSC[, colSums(hvg.subset.HSC@assays@data$logcounts) > 50]
-# hvg.subset.HSC = hvg.subset.HSC[rowSums(hvg.subset.HSC@assays@data$logcounts) > 50,]
-
-hvg.HSC.v2@assays@data$counts = exp(hvg.HSC.v2@assays@data$logcounts) - 1
-
-rownames(hvg.HSC.v2) = rowData(hvg.HSC.v2)$gene_names
-colnames(hvg.HSC.v2) = hvg.HSC.v2$obs_names
-
-hvg.HSC.v2 = as.Seurat(hvg.HSC.v2)
-
-lfile$close_all()
+saveRDS(clust.mature.DE.list, file = here("data/rds_files/mature.clusterDEGs.RDS") )
 ```
 
 
-### Running DEG
-```{r}
+### Running DEG PBS vs SA
 
+```{r}
 lfc.limit = 0.5
 
-clust.HSC.DE.list = list()
-SA.HSC.sample.annots$leiden = as.character(SA.HSC.sample.annots$leiden)
-for (clust.id in unique(SA.HSC.sample.annots$leiden)) {
-    cat("cluster", clust.id, "\n")
-
-    # cluster.subset = hvg.subset.HSC[, hvg.subset.HSC$Mariem_annotation == clust.id ]
-
+clust.mature.DE.list = list()
+hvg.mature.sample.annots$leiden = as.character(hvg.mature.sample.annots$leiden)
+for (clust.id in unique(hvg.mature.sample.annots$leiden)) {
+    try({
+        cat("cluster", clust.id, "\n")
+    
+    hvg.clust.id = hvg.mature.sample.annots %>% filter(leiden == clust.id)
+    
     cluster.raw.counts = bm.merged[rownames(bm.merged), 
                                    intersect(rownames(bm.merged@meta.data),
-                                             SA.HSC.sample.annots$obs_names)]
+                                             hvg.clust.id$obs_names)]
     
     bm.merged.metadata = bm.merged@meta.data %>% 
         mutate(condition = gsub("HTO-([A-Z]+)[0-9]", "\\1", sample))
@@ -118,17 +166,19 @@ for (clust.id in unique(SA.HSC.sample.annots$leiden)) {
         # rld = rlog(cluster.subset.deseq, blind = FALSE)
         # assay(rld) <- limma::removeBatchEffect(assay(rld), rld$batch)
 
-    clust.HSC.DE.list[[clust.id]] = cluster.DE
+    clust.mature.DE.list[[clust.id]] = cluster.DE
     # MA.cluster.normed.data[[clust.id]] =  rld
     
     cluster.DE = cluster.DE %>% filter(padj < 0.05, abs(log2FoldChange) > lfc.limit )
-    clust.HSC.DE.list[[clust.id]] = cluster.DE
+    clust.mature.DE.list[[clust.id]] = cluster.DE
     
     cluster.DE %>% rename(names = gene) %>% rownames_to_column() %>%
-        openxlsx::write.xlsx(file = here(paste0("DEG_sheets/cluster", clust.id, ".HSC.DEG.SAvsPBS.19.08.2024.xlsx")))
+        openxlsx::write.xlsx(file = here(paste0("DEG_sheets/cluster", clust.id, ".mature.DEG.SAvsPBS.09.09.2024.xlsx")))
 
     add_mouse_geneinfo(here(paste0("DEG_sheets/cluster", 
-                                   clust.id, ".HSC.DEG.SAvsPBS.19.08.2024.xlsx")))
+                                   clust.id, ".mature.DEG.SAvsPBS.09.09.2024.xlsx")))
+    })
+    
 }
 ```
 
@@ -195,6 +245,19 @@ for (filename in list.files(cytopus.dir)) {
 ```
 
 
+#### Reading panglodb gene sets 
+
+```{r}
+panglodb.dir = here("panglodb_dataset/pangledb_celltypes")
+panglodb.gene.sets = list()
+for (filename in list.files(panglodb.dir)) {
+    # cellname = gsub(".dat", "", filename)
+    cellname = filename
+    panglodb.gene.sets[[cellname]] = readLines(file.path(panglodb.dir, filename))
+}
+```
+
+
 Calculating the modulescores for pilot and final experiments:
 
 ```{r}
@@ -222,33 +285,38 @@ bm.final = AddModuleScore(bm.final, cytopus.gene.sets,
                                 name = names(cytopus.gene.sets))
 ```
 
+
 ### hvg modulescores
 
 ```{r}
-hvg.HSC.v2 = AddModuleScore(hvg.HSC.v2, table2.gene.features, 
+hvg.mature.v2 = AddModuleScore(hvg.mature.v2, table2.gene.features, 
                                 name = names(table2.gene.features))
 
-hvg.HSC.v2 = AddModuleScore(hvg.HSC.v2, table5.gene.features, 
+hvg.mature.v2 = AddModuleScore(hvg.mature.v2, table5.gene.features, 
                                 name = names(table5.gene.features))
 
-hvg.HSC.v2 = AddModuleScore(hvg.HSC.v2, gene.score.features, 
+hvg.mature.v2 = AddModuleScore(hvg.mature.v2, gene.score.features, 
                                 name = names(gene.score.features))
 
-hvg.HSC.v2 = AddModuleScore(hvg.HSC.v2, cytopus.gene.sets, 
+cytopus.gene.sets$FDC.dat = NULL
+hvg.mature.v2 = AddModuleScore(hvg.mature.v2, cytopus.gene.sets, 
                                 name = names(cytopus.gene.sets))
+
+hvg.mature.v2 = AddModuleScore(hvg.mature.v2, panglodb.gene.sets, 
+                                name = names(panglodb.gene.sets))
 ```
 
 ### Merging the bm final and bm pilot scores
 
 ```{r}
 bm.modulescore.merged = merge(bm.pilot, bm.final, project = "modulscoring")
-SA.HSC.modulescore.bm = bm.modulescore.merged[, SA.HSC.sample.annots$obs_names ]
+SA.mature.modulescore.bm = bm.modulescore.merged[, SA.mature.sample.annots$obs_names ]
 ```
 
 ### Writing the modulescores for quantseq gene sets
 
 ```{r}
-quantseq.modulescores = SA.HSC.modulescore.bm@meta.data[, c("Eosinophil1" , 
+quantseq.modulescores = SA.mature.modulescore.bm@meta.data[, c("Eosinophil1" , 
                                        "Neutrophil2" , 
                                        "Neutrophil_progenitor3"  ,        
                                        "Eosinophil_progenitor4", 
@@ -257,12 +325,12 @@ quantseq.modulescores = SA.HSC.modulescore.bm@meta.data[, c("Eosinophil1" ,
     rename_with(~str_remove(.x, "[0-9]$"))
 
 write.csv(quantseq.modulescores,
-          file = here("Rout/SA.HSC.Quantseq.modulescores.csv"))
+          file = here("Rout/SA.mature.Quantseq.modulescores.csv"))
 ```
 
 
 ```{r}
-hvg.quantseq.modulescores = hvg.HSC.v2@meta.data[, c("Eosinophil1" , 
+hvg.quantseq.modulescores = hvg.mature.v2@meta.data[, c("Eosinophil1" , 
                                        "Neutrophil2" , 
                                        "Neutrophil_progenitor3"  ,        
                                        "Eosinophil_progenitor4", 
@@ -271,65 +339,86 @@ hvg.quantseq.modulescores = hvg.HSC.v2@meta.data[, c("Eosinophil1" ,
     rename_with(~str_remove(.x, "[0-9]$"))
 
 write.csv(hvg.quantseq.modulescores,
-          file = here("Rout/SA.hvg.HSC.Quantseq.modulescores.csv"))
+          file = here("Rout/SA.hvg.mature.Quantseq.modulescores.csv"))
 ```
-
 
 ### Writing the modulescores for cytopus gene sets
 
 ```{r}
-cytopus.modulescores = SA.HSC.modulescore.bm@meta.data %>% 
+cytopus.modulescores = SA.mature.modulescore.bm@meta.data %>% 
     select(abT.dat1:TSCM.dat53) %>% 
     rename_with(~str_remove(.x, ".dat[0-9]{1,2}$"))
 
 write.csv(cytopus.modulescores,
-          file = here("Rout/SA.HSC.cytopus.modulescores.csv"))
+          file = here("Rout/SA.mature.cytopus.modulescores.csv"))
 ```
 
+
 ```{r}
-hvg.cytopus.modulescores = hvg.mature.v2@meta.data %>% 
+hvg.cytopus.modulescores = hvg.mature.v2@meta.data %>%
     select(abT.dat1:TSCM.dat52) %>% 
     rename_with(~str_remove(.x, ".dat[0-9]{1,2}$"))
 
 write.csv(hvg.cytopus.modulescores,
-          file = here("Rout/SA.hvg.HSC.cytopus.modulescores.csv"))
+          file = here("Rout/SA.hvg.mature.cytopus.modulescores.csv"))
+```
+
+### Writing the modulescores for panglodb gene sets
+
+```{r}
+panglodb.modulescores = SA.mature.modulescore.bm@meta.data %>% 
+    select(abT.dat1:TSCM.dat53) %>% 
+    rename_with(~str_remove(.x, ".dat[0-9]{1,2}$"))
+
+write.csv(panglodb.modulescores,
+          file = here("Rout/SA.mature.panglodb.modulescores.csv"))
+```
+
+
+```{r}
+hvg.panglodb.modulescores = hvg.mature.v2@meta.data %>%
+    select(B_cells_memory.txt1:T_regulatory_cells.txt21) %>% 
+    rename_with(~str_remove(.x, ".txt[0-9]{1,2}$"))
+
+write.csv(hvg.panglodb.modulescores,
+          file = here("Rout/SA.hvg.mature.panglodb.modulescores.csv"))
 ```
 
 
 ### Writing the modulescores for Jorssen et al 2024 gene sets
 
 ```{r}
-table2.modulescores = SA.HSC.modulescore.bm@meta.data %>% 
+table2.modulescores = SA.mature.modulescore.bm@meta.data %>% 
     select(basophil1:neutrophil8) %>% 
     rename_with(~str_remove(.x, "[0-9]$"))
 
 write.csv(table2.modulescores,
-          file = here("Rout/SA.HSC.table2.modulescores.csv"))
+          file = here("Rout/SA.mature.table2.modulescores.csv"))
 
 
-table5.modulescores = SA.HSC.modulescore.bm@meta.data %>% 
+table5.modulescores = SA.mature.modulescore.bm@meta.data %>% 
     select(eos_stage11:eos_stage55) %>% 
     rename_with(~str_remove(.x, "[0-9]$"))
 
 write.csv(table5.modulescores,
-          file = here("Rout/SA.HSC.table5.modulescores.csv"))
+          file = here("Rout/SA.mature.table5.modulescores.csv"))
 ```
 
 
+
 ```{r}
-hvg.table2.modulescores = hvg.HSC.v2@meta.data %>% 
+hvg.table2.modulescores = hvg.mature.v2@meta.data %>% 
     select(basophil1:neutrophil8) %>% 
     rename_with(~str_remove(.x, "[0-9]$"))
 
 write.csv(hvg.table2.modulescores,
-          file = here("Rout/SA.hvg.HSC.table2.modulescores.csv"))
+          file = here("Rout/SA.hvg.mature.table2.modulescores.csv"))
 
-hvg.table5.modulescores = hvg.HSC.v2@meta.data %>% 
+hvg.table5.modulescores = hvg.mature.v2@meta.data %>% 
     select(eos_stage11:eos_stage55) %>% 
     rename_with(~str_remove(.x, "[0-9]$"))
 
 write.csv(hvg.table5.modulescores,
-          file = here("Rout/SA.hvg.HSC.table5.modulescores.csv"))
+          file = here("Rout/SA.hvg.mature.table5.modulescores.csv"))
 ```
-
 

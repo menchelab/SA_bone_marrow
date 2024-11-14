@@ -107,8 +107,6 @@ colnames(hvg.subset.HSC) = hvg.subset.HSC$obs_names
 ### Reverse Neutrophil3 and Eosinophil
 
 milo.meta = dd
-
-
 # rownames(hvg.subset.HSC) = gene.names
 ```
 
