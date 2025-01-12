@@ -1,0 +1,390 @@
+---
+title: "Bone-marrow final scRNA-seq of SA infected mice"
+author: "Anna Hakobyan"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE, 
+                      fig.width = 10, fig.height = 7)
+```
+
+
+```{r libs-load, include = FALSE}
+#wget --recursive --no-parent -e robots=off -R "index.html*"  https://biomedical-sequencing.at/projects/BSA_0571_PS_BM_b361cecc39de49a097ae369fe636db81/ 
+
+library(Seurat)
+library(SeuratData)
+library(SeuratDisk)
+
+library(dplyr)
+library(patchwork)
+library(here)
+library(ggpubr)
+library(kableExtra)
+library(tidyverse)
+
+outdir = here("output")
+data_dir = here("data/BSA_0571_PS_BM_b361cecc39de49a097ae369fe636db81")
+
+if (! file.exists(outdir)) {
+    dir.create(outdir)
+}
+
+# source(here("scripts", "marker_genes.R"))
+
+```
+
+
+```{r reading-in, include = FALSE}
+hto_index = read.table(file.path(data_dir, "COUNT",
+                                 "MR_33_10X_SA_PBS_BM_transcriptome", 
+                                 "HTO_demux.csv"), h = T, sep = "," )
+rownames(hto_index) = paste0(hto_index$index, "-1")
+hto_index$index = NULL
+colnames(hto_index) = "sample"
+
+bm.data = Read10X(file.path(data_dir, "COUNT",
+                              "MR_33_10X_SA_PBS_BM_transcriptome", 
+                              "filtered_feature_bc_matrix") )
+
+bm = CreateSeuratObject(counts  = bm.data$`Gene Expression`, 
+                        meta.data = hto_index,
+                        project = "BM",
+                      min.cells = 3)
+
+```
+
+### HTO analysis
+```{r}
+bm[["HTO"]] = CreateAssayObject(counts = bm.data$`Antibody Capture`)
+bm <- NormalizeData(bm, assay = "HTO", normalization.method = "CLR")
+```
+
+```{r}
+# If you have a very large dataset we suggest using k_function = 'clara'. This is a k-medoid
+# clustering function for large applications You can also play with additional parameters (see
+# documentation for HTODemux()) to adjust the threshold for classification Here we are using
+# the default settings
+bm <- HTODemux(bm, assay = "HTO", positive.quantile = 0.99)
+```
+
+
+```{r}
+table(bm$HTO_classification.global)
+```
+
+```{r}
+# Group cells based on the max HTO signal
+Idents(bm) <- "HTO_maxID"
+RidgePlot(bm, assay = "HTO", features = rownames(bm[["HTO"]])[1:4], ncol = 2)
+```
+
+```{r}
+Idents(bm) = "HTO_classification.global"
+# First, we will remove negative cells from the object
+bm.subset <- subset(bm, idents = "Negative", invert = TRUE)
+
+# Calculate a tSNE embedding of the HTO data
+DefaultAssay(bm.subset) <- "HTO"
+bm.subset <- ScaleData(bm.subset, features = rownames(bm.subset),
+    verbose = FALSE)
+bm.subset <- RunPCA(bm.subset, features = rownames(bm.subset), approx = FALSE)
+bm.subset <- RunTSNE(bm.subset, dims = 1:8, perplexity = 100, check_duplicates = FALSE)
+DimPlot(bm.subset)
+```
+
+```{r}
+# Extract the singlets
+bm.singlet <- subset(bm, idents = "Singlet")
+
+# Select the top 1000 most variable features
+bm.singlet <- FindVariableFeatures(bm.singlet)
+
+# Scaling RNA data, we only scale the variable features here for efficiency
+bm.singlet <- ScaleData(bm.singlet, features = VariableFeatures(bm.singlet))
+
+# Run PCA
+bm.singlet <- RunPCA(bm.singlet, features = VariableFeatures(bm.singlet))
+# We select the top 10 PCs for clustering and tSNE based on PCElbowPlot
+bm.singlet <- FindNeighbors(bm.singlet, reduction = "pca", dims = 1:10)
+bm.singlet <- FindClusters(bm.singlet, resolution = 0.6, verbose = FALSE)
+bm.singlet <- RunTSNE(bm.singlet, reduction = "pca", dims = 1:10)
+
+# Projecting singlet identities on TSNE visualization
+DimPlot(bm.singlet, group.by = "HTO_classification")
+```
+
+
+```{r}
+bm = bm.singlet
+```
+
+```{r, fig.width = 8}
+total_counts_scatterplot = bm@meta.data %>% 
+    arrange(nCount_RNA) %>% 
+    group_by(sample) %>% 
+    mutate(counter = row_number(sample)) %>% 
+    ggplot(aes(x = counter, y = nCount_RNA, color = sample)) + geom_point()
+
+ggsave(total_counts_scatterplot, filename = here("figures/total_nCount_RNA_scatter.png"),
+       width = 7, height = 5)
+
+violins_for_samples = bm@meta.data %>% 
+    arrange(nCount_RNA) %>% 
+    group_by(sample) %>% 
+    ggplot(aes(x = sample, y = nCount_RNA, fill = sample)) + 
+    geom_violin() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+print(violins_for_samples)
+ggsave(violins_for_samples, filename = here("figures/total_nCount_RNA_violin.png"),
+       width = 7, height = 5)
+```
+
+
+```{r mt-percent, include = FALSE}
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+# for(smp in names(bm.split)) {
+#     bm.split[[smp]][["percent.mt"]] = PercentageFeatureSet(bm.split[[smp]], pattern = "^mt-")
+# }
+bm[["percent.mt"]] = PercentageFeatureSet(bm, pattern = "^mt-")
+```
+
+
+### QC and normalization
+
+The QC plots for number of features and number of counts, as well as percentage 
+of mitochondrial features.
+
+```{r qc-plots, echo = FALSE, warning = FALSE}
+bm_qc = VlnPlot(bm, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"),
+                group.by = "sample", ncol = 3, log = TRUE) 
+print(bm_qc)
+```
+
+Before filtering there are `r Cells(bm) %>% length` cells and `r nrow(bm)` genes.
+
+```{r filt_params}
+nfeatRNA_thresh_low = 150
+nfeatRNA_thresh_up = 20000
+ncount_min = 50
+percentmt = 100
+```
+
+Filtering criteria are as follows:
+
+1. min number of features(genes) - `r nfeatRNA_thresh_low`
+2. max number of features(genes) - `r nfeatRNA_thresh_up`
+3. min number of reads in a cell - `r ncount_min`
+4. percent of mitochondrial genes - `r percentmt`
+
+
+```{r filtering-out, include = FALSE}
+init_bm_length = length(bm$nFeature_RNA)
+
+bm <- subset(bm, subset = nFeature_RNA > nfeatRNA_thresh_low &
+                 nFeature_RNA < nfeatRNA_thresh_up &
+                 percent.mt < percentmt &
+                 nCount_RNA > ncount_min
+                 )
+
+bm_qc = VlnPlot(bm, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"),
+                group.by = "sample", ncol = 3, log = TRUE) 
+
+print(bm_qc)
+# for(smp in names(bm.split)) {
+#     cat(smp)
+#     bm.split[[smp]] = subset(bm.split[[smp]], subset = nFeature_RNA > nfeatRNA_thresh_low &
+#                  nFeature_RNA < nfeatRNA_thresh_up &
+#                  percent.mt < percentmt &
+#                  nCount_RNA > ncount_min)
+# }
+
+bm = subset(bm, subset = sample %in% c("HTO-PBS3", "HTO-PBS4", 
+                                       "HTO-SA3", "HTO-SA4"))
+
+bm$sample = gsub("^HTO-MR_30_10X_(.*)_BM.*$", "\\1", bm$sample)
+```
+
+After filtering there are `r Cells(bm) %>% length` cells and `r nrow(bm)` genes.
+
+### scTransforming
+
+```{r}
+bm = SCTransform(bm, method = "glmGamPoi", vars.to.regress = "percent.mt", verbose = FALSE)
+```
+
+
+```{r}
+bm <- RunPCA(bm, verbose = FALSE)
+bm <- RunUMAP(bm, dims = 1:30, verbose = FALSE)
+
+bm <- FindNeighbors(bm, dims = 1:30, verbose = FALSE)
+bm <- FindClusters(bm, verbose = FALSE)
+DimPlot(bm, label = TRUE) + NoLegend()
+```
+
+# Annotations with singleR
+
+```{r, include = FALSE}
+library(SingleR)
+library(celldex)
+library(Seurat)
+library(here)
+library(patchwork)
+library(scRNAseq)
+library(scuttle)
+library(tidyverse)
+library(ggsci)
+
+outdir = here("output")
+
+fig.dir = here("figures")
+# source(here("scripts", "marker_genes.R"))
+
+# hpca.se <- HumanPrimaryCellAtlasData()
+
+mouse.se = celldex::MouseRNAseqData()
+
+mouse.imm = celldex::ImmGenData()
+
+source(here("scripts", "eos_markers.R"))
+```
+
+<!-- ```{r load-combined, echo=FALSE} -->
+<!-- # bm.combined = readRDS(file = file.path(outdir, "bm.combined.rds")) -->
+<!-- bm = readRDS(file = file.path(outdir, "bm_final.rds")) -->
+<!-- ``` -->
+
+## Annotations with MouseRNAseqData
+
+```{r single-R, echo=FALSE}
+bm_singleR = SingleR(test = as.SingleCellExperiment(bm), ref = mouse.se, 
+                       assay.type.test = 1, labels = mouse.se$label.main)
+
+# bm_singleR_fine = SingleR(test = as.SingleCellExperiment(bm), ref = mouse.se, 
+#                        assay.type.test = 1, labels = mouse.se$label.fine)
+```
+
+```{r singleR-annot-plots, echo=FALSE}
+unrelated_cells = c("Adipocytes", "Cardiomyocytes", "Epithelial cells",
+                    "Fibroblasts", "Fibroblasts", "Microglia", "Neurons",
+                    "Oligodendrocytes", "Hepatocytes")
+
+bm_labels = bm_singleR$pruned.labels
+bm_labels [bm_labels %in% unrelated_cells ] = "Other"
+bm_labels = as.factor(setNames(bm_labels, names(bm@active.ident)))
+bm$rnaseq_labels = bm_labels
+
+bm@active.ident = bm$rnaseq_labels
+
+all_levels =levels(bm_labels)
+all_levels = c("B cells", "Endothelial cells", "Dendritic cells", "Erythrocytes",
+               "Monocytes", "Granulocytes", "NK cells", "Macrophages", "Other")
+
+all_colors = setNames(pal_jco()(length(all_levels)), all_levels)
+
+all_colors = setNames(pal_d3("category20")(length(all_colors)), all_levels)
+
+bm_singleR_annotated = DimPlot(bm, reduction = "umap", 
+                                 label = FALSE, pt.size = 0.4,
+                                 cols = all_colors# , split.by = "sample"
+                               ) + 
+    plot_annotation(title = "bm - singleR RNA-seq annotated cell types")
+print(bm_singleR_annotated)
+
+# ggsave(bm_singleR_annotated, 
+#        filename = file.path(fig.dir, "mousernaseq_annotation.umap.png"),
+#        width = 8, height = 3.5)
+```
+
+## Annotations with MouseRNAseqData ImmGen
+
+```{r}
+bm_singleR_immgen = SingleR(test = as.SingleCellExperiment(bm), ref = mouse.imm, 
+                       assay.type.test = 1, labels = mouse.imm$label.main)
+
+# bm_singleR_immgen_fine = SingleR(test = as.SingleCellExperiment(bm), ref = mouse.imm, 
+#                        assay.type.test = 1, labels = mouse.imm$label.fine)
+```
+
+```{r}
+imm_gen_cell_counts = bm_singleR_immgen$pruned.labels %>% table() 
+cells_few = names(which(imm_gen_cell_counts <10))
+
+bm_immgen_labels = bm_singleR_immgen$pruned.labels
+bm_immgen_labels [bm_immgen_labels %in% cells_few ] = "Other"
+
+bm_immgen_labels [bm_immgen_labels == "Tgd" ] = "T cells"
+bm_immgen_labels [bm_immgen_labels == "B cells, pro" ] = "B cells"
+
+# bm_immgen_labels = droplevels(bm_immgen_labels)
+
+bm_immgen_labels = as.factor(setNames(bm_immgen_labels, names(bm@active.ident)))
+bm$immgen_labels = bm_immgen_labels
+bm@active.ident = bm$immgen_labels
+
+all_immgen_levels =levels(bm_immgen_labels)
+all_immgen_levels = c("B cells", "Basophils", "DC", "ILC", "Monocytes",
+                      "Neutrophils", "NK cells", "NKT", "Other",
+                      "T cells", "Stem cells")
+
+all_immgen_colors = setNames(pal_jco()(length(all_immgen_levels)), all_immgen_levels)
+
+all_immgen_colors = setNames(pal_d3("category20")(length(all_immgen_levels)), all_immgen_levels)
+
+bm_singleR_immgen_annotated = DimPlot(bm, reduction = "umap", 
+                                 label = FALSE, pt.size = 0.4,
+                                 cols = all_immgen_colors# , split.by = "sample"
+                                 ) + 
+    plot_annotation(title = "bm - singleR ImmGen annotated cell types")
+print(bm_singleR_immgen_annotated)
+ggsave(bm_singleR_immgen_annotated, 
+       filename = file.path(fig.dir, "immgen_annotation.umap.png"),
+       width = 8, height = 3.5)
+```
+
+
+```{r fig.width = 10, fig.height = 5}
+pp = ggpubr::ggarrange(bm_singleR_annotated, bm_singleR_immgen_annotated)
+print(pp)
+# ggsave(pp, 
+#        filename = file.path(fig.dir, "immgen_rnaseq_annotation.umap.png"),
+#        width = 13, height = 5)
+```
+
+
+### Checking eosinophil markers 
+
+#### Eosinophil markers
+
+```{r, fig.width = 10, fig.height = 6}
+FeaturePlot(bm, features = eos_markers, pt.size = 0.3)
+```
+
+
+#### Eosinophil progenitor markers
+
+```{r, fig.width = 10, fig.height = 6}
+FeaturePlot(bm, features = eos_progenitors, ncol = 3, pt.size = 0.3)
+```
+
+
+### Saving
+
+```{r saving-data, include = FALSE}
+saveRDS(bm, file = file.path(outdir, "bm_final.rds") )
+# bm.split = SplitObject(bm, split.by = "sample")
+# saveRDS(bm.split, file = file.path(outdir, "bm_split.rds"))
+```
+
+```{r}
+bm@active.assay = "RNA"
+# SaveH5Seurat(bm, file = file.path(outdir, "bm_final_singlet.h5Seurat"), nfeatRNA_thresh_low)
+# Convert(file.path(outdir, "bm_final_singlet.h5Seurat"), dest = "h5ad")
+sceasy::convertFormat(bm, from="seurat", to="anndata",
+                      outFile=file.path(outdir, "bm_final_singlet.h5ad"))
+```
+

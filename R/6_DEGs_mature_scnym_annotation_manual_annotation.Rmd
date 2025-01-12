@@ -1,0 +1,310 @@
+---
+title: "scNym clustering HSC DEG"
+output: html_notebook
+---
+
+```{r}
+rm(list = ls())
+knitr::opts_chunk$set(comment = '', fig.width = 6, 
+                      fig.height = 6, echo = FALSE, 
+                      warning = FALSE)
+```
+
+
+```{r, message = FALSE}
+library(miloR)
+library(SingleCellExperiment)
+library(scater)
+library(dplyr)
+library(patchwork)
+library(here)
+library(scales)
+library(scran)
+library(tidyverse)
+library(ggrepel)
+library(rcartocolor)
+library(circlize)
+library(Seurat)
+
+outdir = here("Rout")
+
+source(here("R/functions.R"))
+
+library(loomR)
+```
+
+### Getting scnym-based leiden mapping 
+
+```{r}
+l1_file = here("scfiles/SA_mature_v2.loom")
+lfile <- connect(filename = l1_file, mode = "r+", skip.validate = TRUE)
+
+cattrnames = names(lfile$col.attrs)
+
+SA.mature.sample.annots = data.frame(leiden = lfile$col.attrs$leiden[])
+for(attname in cattrnames) {
+    SA.mature.sample.annots[[attname]] = lfile$col.attrs[[attname]][]
+}
+lfile$close_all()
+```
+### Reading the hvg data
+
+```{r}
+l1_file = here("scfiles/hvg_mature_X_scVI_based_annotated_220924.loom")
+lfile <- connect(filename = l1_file, mode = "r+", skip.validate = TRUE)
+
+cattrnames = names(lfile$col.attrs)
+
+hvg.mature.sample.annots = data.frame(leiden = lfile$col.attrs[["leiden"]][])
+for(attname in cattrnames) {
+    hvg.mature.sample.annots[[attname]] = lfile$col.attrs[[attname]][]
+}
+
+hvg.mature.v2 = SingleCellExperiment(list(logcounts=t(lfile[["matrix"]][,])),
+    colData=hvg.mature.sample.annots,
+    rowData=DataFrame(gene_names=lfile$row.attrs$var_names[]))
+
+# hvg.subset.mature = hvg.subset.mature[, colSums(hvg.subset.mature@assays@data$logcounts) > 50]
+# hvg.subset.mature = hvg.subset.mature[rowSums(hvg.subset.mature@assays@data$logcounts) > 50,]
+
+hvg.mature.v2@assays@data$counts = exp(hvg.mature.v2@assays@data$logcounts) - 1
+
+rownames(hvg.mature.v2) = rowData(hvg.mature.v2)$gene_names
+colnames(hvg.mature.v2) = hvg.mature.v2$obs_names
+
+hvg.mature.v2 = as.Seurat(hvg.mature.v2)
+
+lfile$close_all()
+```
+
+### Reading the raw data
+
+```{r}
+bm.final = readRDS(here("data/rds_files", "bm_final.rds") )
+bm.final$batch = "final"
+bm.pilot = readRDS(here("data/rds_files", "bm_pilot.rds") )
+bm.pilot$batch = "pilot"
+
+bm.merged.allgenes = merge(bm.final, bm.pilot, project = "bm.merged")
+
+
+counts <- GetAssayData(bm.merged.allgenes, layer="counts", assay="RNA")   
+common.genes = intersect(Features(bm.merged.allgenes), Features(hvg.mature.v2))
+
+counts.sub <- counts[common.genes,]
+bm.merged <- CreateSeuratObject(counts=counts.sub)
+bm.merged@meta.data = bm.merged.allgenes@meta.data
+
+```
+
+
+### SA vs PBS DEGs
+### Running DE for all MA annotated populations
+
+```{r}
+MA.clust.mature.DE.list = list()
+MA.clust.mature.rld.list = list()
+
+for (clust.id in unique(hvg.mature.v2$manual_cell_mapping)) {
+    try({
+        cat("cluster", clust.id, "\n")
+        
+        
+        hvg.clust.id = hvg.mature.sample.annots %>% filter(manual_cell_mapping == clust.id)
+        
+        cluster.raw.counts = bm.merged[intersect(rownames(bm.merged), rownames(hvg.mature.v2)), 
+                                       intersect(rownames(bm.merged@meta.data),
+                                                 hvg.clust.id$obs_names)]
+        
+        bm.merged.metadata = bm.merged@meta.data %>% 
+            mutate(condition = gsub("HTO-([A-Z]+)[0-9]", "\\1", sample))
+        
+        bm.merged.metadata = bm.merged.metadata[colnames(cluster.raw.counts), ] 
+        
+        cluster.subset.deseq = DESeqDataSetFromMatrix(cluster.raw.counts@assays$RNA$counts + 1,
+                                                      colData = bm.merged.metadata,
+                                                      design = ~ condition + batch)
+        cluster.DE = pseudobulk_DEseq2(cluster.subset.deseq)
+        
+        rld = rlog(cluster.subset.deseq, blind = FALSE)
+        assay(rld) <- limma::removeBatchEffect(assay(rld), rld$batch)
+
+        MA.clust.mature.DE.list[[clust.id]] = cluster.DE
+        MA.clust.mature.rld.list[[clust.id]] = rld
+        
+        
+        
+        cluster.DE %>% dplyr::rename(names = gene) %>% rownames_to_column() %>%
+            openxlsx::write.xlsx(file = here(paste0("DEG_sheets/mature_PBSvsSA/cluster", clust.id, ".mature.DEG.SAvsPBS.10.08.2024.xlsx")))
+        
+        add_mouse_geneinfo(here(paste0("DEG_sheets/mature_PBSvsSA/cluster",
+                                       clust.id, ".mature.DEG.SAvsPBS.10.08.2024.xlsx")))
+    })
+}
+
+# saveRDS(cluster.normed.data, file = file.path(outdir, "granulo.clust.rld.corrected.RDS"))
+saveRDS(MA.clust.mature.DE.list, file = file.path(outdir, "MA.clust.mature.DE.SAvsPBS.list.13.10.2024.RDS"))
+saveRDS(MA.clust.mature.rld.list, file = file.path(outdir, "MA.clust.mature.rld.SAvsPBS.list.13.10.2024.RDS"))
+
+```
+
+### Plotting the heatmaps
+
+```{r}
+
+center_apply <- function(x) {
+    out = t(apply(x, 1, function(y) y - mean(y)))
+    rownames(out) = rownames(x)
+    colnames(out) = colnames(x)
+    
+    return(out)
+}
+
+
+for (clust.id in c("Granulocyte", "Neutrophil", "Early granulocyte")) {
+    
+    cat("cluster", clust.id, "\n")
+    
+    cluster.DE = MA.clust.mature.DE.list[[clust.id]]
+    rld = MA.clust.mature.rld.list[[clust.id]]
+    
+    if (clust.id == "Granulocyte" | clust.id == "Early granulocyte" ) {
+        lfd.limit = 0.5
+    } else {
+        lfd.limit = 8
+    }
+
+    DE.genes = cluster.DE %>% filter(padj < 0.05, abs(log2FoldChange) > lfd.limit ) %>% pull(gene)
+    mat = assay(rld)[DE.genes, ]
+     
+    mat.centered = center_apply(mat)
+    
+    rdbu.palette = colorRamp2(c(quantile(mat.centered, 0.01), 0, quantile(mat.centered, 0.99)),
+                          c("dodgerblue4", "white", "darkred"), space = "RGB")
+
+    tr.palette = colorRamp2(c(quantile(mat.centered, 0.01), 0, quantile(mat.centered, 0.99)), 
+                        carto_pal(n = 3, "TealRose"), space = "RGB")    
+
+    
+    if (clust.id %in% c("Granulocyte","Early granulocyte")) {
+        pwidth = 5
+        pheight = 5
+    } else {
+        pwidth = 4.5
+        pheight = 10
+    }
+
+    
+    # p_rdbu = DoHeatmap(mature.normalized.scaled, features = genes, #assay = logcounts,
+    #           cells = Cells(subset(mature.normalized.scaled, leiden == clust.id)), group.by = "condition") + 
+    #     scale_fill_continuous_divergingx(palette ="RdBu", mid = 0, rev = TRUE)
+    # 
+    # ggsave(filename = here(paste0("figures/cluster", clust.id, ".mature.heatmap.RdBu.pdf")), 
+    #        plot = p_rdbu,
+    #        width = pwidth, height = pheight)
+    # 
+    # p_tealrose = DoHeatmap(mature.normalized.scaled, features = genes, #assay = logcounts,
+    #           cells = Cells(subset(mature.normalized.scaled, leiden == clust.id)), group.by = "condition") + 
+    #     scale_fill_continuous_divergingx(palette = "TealRose", mid = 0)
+    # 
+    # ggsave(filename = here(paste0("figures/cluster", clust.id, ".mature.heatmap.TealRose.pdf")), 
+    #        plot = p_tealrose,
+    #        width = pwidth, height = pheight)
+    # 
+
+   
+
+    clust.ht.TR = Heatmap(mat.centered[sort(rownames(mat.centered)), ], name = "expression", 
+            col = tr.palette,
+            column_split = rld$condition,
+            top_annotation = HeatmapAnnotation(cluster = anno_block(
+        gp = gpar(fill = c("grey", "goldenrod1"), col = "white"), # <- here controls the filled color
+            ) ),
+        
+        column_names_gp = gpar(fontsize = 0),  
+        cluster_rows = FALSE,
+        cluster_column_slices = FALSE, 
+        row_dend_width = unit(0, "cm"),
+        column_dend_height = unit(0, "cm"),
+        row_dend_gp = gpar(col = "white"),
+        column_dend_gp = gpar(col = "white"))
+    
+    pdf(here(paste0("figures/DEG_heatmaps/mature/cluster", clust.id, ".mature.heatmap.TealRose_alphabetical.pdf")), 
+        width = pwidth, height = pheight)
+    draw(clust.ht.TR)
+    dev.off()
+    
+
+    clust.ht.rdbu = Heatmap(mat.centered[sort(rownames(mat.centered)), ], name = "expression", 
+            col = rdbu.palette,
+            column_split = rld$condition,
+            top_annotation = HeatmapAnnotation(cluster = anno_block(
+        gp = gpar(fill = c("grey", "goldenrod1"), col = "white"), # <- here controls the filled color
+        ) ),
+            column_names_gp = gpar(fontsize = 0),
+        cluster_rows = FALSE,
+        cluster_column_slices = FALSE, 
+        row_dend_width = unit(0, "cm"),
+        column_dend_height = unit(0, "cm"),
+        row_dend_gp = gpar(col = "white"),
+        column_dend_gp = gpar(col = "white") )
+    
+    pdf(here(paste0("figures/DEG_heatmaps/mature/cluster", clust.id, ".mature.heatmap.RdBu_alphabetical.pdf")), 
+        width = pwidth, height = pheight)
+    draw(clust.ht.rdbu)
+    dev.off()
+    
+}
+```
+
+
+
+### Extracting cluster markers
+### Running cluster DEGs
+
+```{r}
+# lfc.limit = 0.5
+
+clust.mature.DE.list = list()
+hvg.mature.sample.annots$manual_cell_mapping = as.character(hvg.mature.sample.annots$manual_cell_mapping)
+for (clust.id in unique(hvg.mature.sample.annots$manual_cell_mapping)) {
+    try({
+        cat("cluster", clust.id, "\n")
+    
+    common.cells = intersect(rownames(bm.merged@meta.data),
+                                             hvg.mature.sample.annots$obs_names)
+    
+    cluster.raw.counts = bm.merged[rownames(bm.merged), 
+                                   common.cells]
+    
+    bm.merged.metadata = bm.merged@meta.data[common.cells, ]
+    
+    rownames(hvg.mature.sample.annots) = hvg.mature.sample.annots$obs_names
+    bm.merged.metadata$manual_cell_mapping = hvg.mature.sample.annots[common.cells,]$manual_cell_mapping
+    
+    bm.merged.metadata = bm.merged.metadata %>% 
+        mutate(cluster.condition = ifelse(manual_cell_mapping == clust.id, "1", "0"),
+               cluster.condition = factor(cluster.condition, levels = c("0", "1")))
+    
+    cluster.subset.deseq = DESeqDataSetFromMatrix(cluster.raw.counts@assays$RNA$counts + 1,
+                                                   colData = bm.merged.metadata,
+                                                   design = ~ cluster.condition + batch)
+    cluster.DE = pseudobulk_DEseq2(cluster.subset.deseq, contrast.in = c("cluster.condition", "1", "0"))
+
+        # rld = rlog(cluster.subset.deseq, blind = FALSE)
+        # assay(rld) <- limma::removeBatchEffect(assay(rld), rld$batch)
+
+    cluster.DE = cluster.DE %>% arrange(padj, desc(log2FoldChange ) ) 
+    clust.mature.DE.list[[clust.id]] = cluster.DE
+    
+    cluster.DE %>% dplyr::rename(names = gene) %>% rownames_to_column() %>%
+        openxlsx::write.xlsx(file = here(paste0("DEG_sheets/cluster_markers/mature/manual_annotation_cluster", clust.id, ".mature_X_scVI.20.11.2024.xlsx")))
+
+    add_mouse_geneinfo(here(paste0("DEG_sheets/cluster_markers/mature/manual_annotation_cluster", clust.id,
+                                   ".mature_X_scVI.20.11.2024.xlsx")))
+    })
+}
+saveRDS(clust.mature.DE.list, file = here("data/rds_files/mature.manual_annotation_clusterDEGs.20112024.RDS") )
+```
+
+
