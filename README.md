@@ -4,8 +4,8 @@ scRNA-seq analysis for Radhouani et al. paper, Science Immunology, 2025.
 The running order of the scripts is as follows:
 
 1. Reading the data in R using:
-  * R/1_read_in_pilot.Rmd
-  * R/2_read_in_final.Rmd
+   * R/1_read_in_pilot.Rmd
+   * R/2_read_in_final.Rmd
 
 2. Performing single-cell integration using scVI, initial annotation using scNym, and leiden clustering of mature and hematopoietic stem cells (HSC). 
    * python/1_scvi_integration.ipynb
