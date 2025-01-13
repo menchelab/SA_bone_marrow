@@ -24,3 +24,5 @@ These markers have been used for manual annotation of the clusters.
 5. Differential expression between SA- and PBS-treated mice across cell types.
    * R/5_DEGs_HSC_scnym_annotation_manual_annotation.Rmd
    * R/6_DEGs_mature_scnym_annotation_manual_annotation.Rmd
+
+[![DOI](https://zenodo.org/badge/667063786.svg)](https://doi.org/10.5281/zenodo.14634569)
